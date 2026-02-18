@@ -2,7 +2,7 @@
  *
  * CSEE 4840 Lab 2 for 2019
  *
- * Name/UNI: বাবা
+ * Name/UNI: baba
  */
 #include "fbputchar.h"
 #include <stdio.h>
@@ -58,13 +58,13 @@ static int key_in_prev(uint8_t key, uint8_t prev[6])
 
 static char hid_to_ascii(uint8_t keycode, int shifted)
 {
-    if (keycode >= 0x04 && keycode <= 0x1d) { /* a-z */
+    if (keycode >= 0x04 && keycode <= 0x1d) {
         char c = 'a' + (keycode - 0x04);
-        if (shifted) c = c - 'a' + 'A';
+        if (shifted) c = (char)(c - 'a' + 'A');
         return c;
     }
 
-    if (keycode >= 0x1e && keycode <= 0x27) { /* 1-0 */
+    if (keycode >= 0x1e && keycode <= 0x27) {
         const char normal[] = "1234567890";
         const char shiftd[] = "!@#$%^&*()";
         return shifted ? shiftd[keycode - 0x1e] : normal[keycode - 0x1e];
@@ -94,22 +94,52 @@ static void redraw_input_line(void)
     fbputs(input_buf, input_row, 8);
 }
 
-/* Client-side display fix: trim duplicated trailing <ip:port> */
-static void trim_trailing_addr(char *s)
+/* Remove duplicated address fragments after the first <ip:port> prefix */
+static void strip_extra_addr_fragments(char *s)
 {
-    char *last_lt = strrchr(s, '<');
-    char *last_gt = strrchr(s, '>');
+    char out[1024];
+    int j = 0;
+    int i = 0;
 
-    if (!last_lt || !last_gt || last_gt < last_lt) return;
-    if (*(last_gt + 1) != '\0') return;          /* must be at end */
-    if (strchr(last_lt, ':') == NULL) return;    /* look like ip:port */
+    char *first_lt = strchr(s, '<');
+    char *first_gt = first_lt ? strchr(first_lt, '>') : NULL;
 
-    *last_lt = '\0';
-    while (*s) {
-        size_t len = strlen(s);
-        if (len == 0 || s[len - 1] != ' ') break;
-        s[len - 1] = '\0';
+    if (first_lt && first_gt && first_lt == s) {
+        while (s[i] && &s[i] <= first_gt && j < (int)sizeof(out) - 1) {
+            out[j++] = s[i++];
+        }
     }
+
+    while (s[i] && j < (int)sizeof(out) - 1) {
+        /* Remove any <...> block after prefix */
+        if (s[i] == '<') {
+            i++;
+            while (s[i] && s[i] != '>') i++;
+            if (s[i] == '>') i++;
+            continue;
+        }
+
+        /* Remove dangling fragments like :35418> or 35418> */
+        if (s[i] == ':' || (s[i] >= '0' && s[i] <= '9')) {
+            int k = i;
+            if (s[k] == ':') k++;
+            int d = 0;
+            while (s[k] >= '0' && s[k] <= '9' && d < 8) {
+                k++;
+                d++;
+            }
+            if (d > 0 && s[k] == '>') {
+                i = k + 1;
+                continue;
+            }
+        }
+
+        out[j++] = s[i++];
+    }
+
+    while (j > 0 && out[j - 1] == ' ') j--;
+    out[j] = '\0';
+    strcpy(s, out);
 }
 
 int main()
@@ -150,6 +180,7 @@ int main()
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(SERVER_PORT);
+
     if (inet_pton(AF_INET, SERVER_HOST, &serv_addr.sin_addr) <= 0) {
         fprintf(stderr, "Error: Could not convert host IP \"%s\"\n", SERVER_HOST);
         exit(1);
@@ -168,16 +199,16 @@ int main()
                                   &transferred, 0);
         if (transferred != sizeof(packet)) continue;
 
-        int shifted = (packet.modifiers & 0x22) != 0; /* LSHIFT/RSHIFT */
+        int shifted = (packet.modifiers & 0x22) != 0;
 
         for (int i = 0; i < 6; i++) {
             uint8_t key = packet.keycode[i];
             if (key == 0) continue;
-            if (key_in_prev(key, prev_keys)) continue; /* new key press only */
+            if (key_in_prev(key, prev_keys)) continue;
 
-            if (key == 0x29) { /* ESC */
+            if (key == 0x29) {
                 goto done;
-            } else if (key == 0x28) { /* ENTER -> send */
+            } else if (key == 0x28) {
                 if (input_len > 0) {
                     write(sockfd, input_buf, input_len);
                     write(sockfd, "\n", 1);
@@ -185,7 +216,7 @@ int main()
                     input_buf[0] = '\0';
                     redraw_input_line();
                 }
-            } else if (key == 0x2a) { /* BACKSPACE */
+            } else if (key == 0x2a) {
                 if (input_len > 0) {
                     input_len--;
                     input_buf[input_len] = '\0';
@@ -228,7 +259,7 @@ void *network_thread_f(void *ignored)
             if (ch == '\n') {
                 line[line_len] = '\0';
                 if (line_len > 0) {
-                    trim_trailing_addr(line);
+                    strip_extra_addr_fragments(line);
                     if (line[0] != '\0') {
                         fbputs(line, chat_row++, 0);
                         if (chat_row >= divider_row) chat_row = 1;
