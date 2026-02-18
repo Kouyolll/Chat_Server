@@ -217,6 +217,28 @@ void *network_thread_f(void *ignored)
             if (ch == '\n') {
                 line[line_len] = '\0';
                 if (line_len > 0) {
+                    /* 去掉末尾重复的 <ip:port>，只做显示修正 */
+                    static void trim_trailing_addr(char *s)
+                    {
+                        size_t n = strlen(s);
+                        if (n < 3) return;
+
+                        char *last_lt = strrchr(s, '<');
+                        char *last_gt = strrchr(s, '>');
+                        if (!last_lt || !last_gt || last_gt < last_lt) return;
+
+                        /* 仅当这个 <...> 在行尾时才删 */
+                        if (*(last_gt + 1) == '\0') {
+                       /* 保守判断：里面要有冒号，像 ip:port */
+                        if (strchr(last_lt, ':')) {
+                       *last_lt = '\0';
+                          /* 顺手去掉末尾空格 */
+                       while (strlen(s) > 0 && s[strlen(s) - 1] == ' ')
+                      s[strlen(s) - 1] = '\0';
+        }
+    }
+}
+
                     fbputs(line, chat_row++, 0);
                     if (chat_row >= divider_row) chat_row = 1;
                 }
