@@ -2,7 +2,7 @@
  *
  * CSEE 4840 Lab 2 for 2019
  *
- * Name/UNI: 爸爸
+ * Name/UNI: বাবা
  */
 #include "fbputchar.h"
 #include <stdio.h>
@@ -50,8 +50,9 @@ static int input_len = 0;
 
 static int key_in_prev(uint8_t key, uint8_t prev[6])
 {
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 6; i++) {
         if (prev[i] == key) return 1;
+    }
     return 0;
 }
 
@@ -63,15 +64,14 @@ static char hid_to_ascii(uint8_t keycode, int shifted)
         return c;
     }
 
-    /* 1-0 */
-    if (keycode >= 0x1e && keycode <= 0x27) {
+    if (keycode >= 0x1e && keycode <= 0x27) { /* 1-0 */
         const char normal[] = "1234567890";
         const char shiftd[] = "!@#$%^&*()";
         return shifted ? shiftd[keycode - 0x1e] : normal[keycode - 0x1e];
     }
 
     switch (keycode) {
-    case 0x2c: return ' ';                      /* space */
+    case 0x2c: return ' ';
     case 0x2d: return shifted ? '_' : '-';
     case 0x2e: return shifted ? '+' : '=';
     case 0x2f: return shifted ? '{' : '[';
@@ -94,13 +94,30 @@ static void redraw_input_line(void)
     fbputs(input_buf, input_row, 8);
 }
 
+/* Client-side display fix: trim duplicated trailing <ip:port> */
+static void trim_trailing_addr(char *s)
+{
+    char *last_lt = strrchr(s, '<');
+    char *last_gt = strrchr(s, '>');
+
+    if (!last_lt || !last_gt || last_gt < last_lt) return;
+    if (*(last_gt + 1) != '\0') return;          /* must be at end */
+    if (strchr(last_lt, ':') == NULL) return;    /* look like ip:port */
+
+    *last_lt = '\0';
+    while (*s) {
+        size_t len = strlen(s);
+        if (len == 0 || s[len - 1] != ' ') break;
+        s[len - 1] = '\0';
+    }
+}
+
 int main()
 {
     int err;
     struct sockaddr_in serv_addr;
     struct usb_keyboard_packet packet;
     int transferred;
-
     uint8_t prev_keys[6] = {0};
 
     if ((err = fbopen()) != 0) {
@@ -120,19 +137,16 @@ int main()
     fbputs("CHAT", 0, 0);
     redraw_input_line();
 
-    /* Open the keyboard */
     if ((keyboard = openkeyboard(&endpoint_address)) == NULL) {
         fprintf(stderr, "Did not find a keyboard\n");
         exit(1);
     }
 
-    /* Create a TCP communications socket */
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         fprintf(stderr, "Error: Could not create socket\n");
         exit(1);
     }
 
-    /* Get the server address */
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(SERVER_PORT);
@@ -141,21 +155,17 @@ int main()
         exit(1);
     }
 
-    /* Connect the socket to the server */
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        fprintf(stderr, "Error: connect() failed.  Is the server running?\n");
+        fprintf(stderr, "Error: connect() failed. Is the server running?\n");
         exit(1);
     }
 
-    /* Start the network thread */
     pthread_create(&network_thread, NULL, network_thread_f, NULL);
 
-    /* Look for and handle keypresses */
     for (;;) {
         libusb_interrupt_transfer(keyboard, endpoint_address,
                                   (unsigned char *)&packet, sizeof(packet),
                                   &transferred, 0);
-
         if (transferred != sizeof(packet)) continue;
 
         int shifted = (packet.modifiers & 0x22) != 0; /* LSHIFT/RSHIFT */
@@ -205,6 +215,7 @@ void *network_thread_f(void *ignored)
     char rx[BUFFER_SIZE];
     char line[1024];
     int line_len = 0;
+    (void)ignored;
 
     while (1) {
         int n = read(sockfd, rx, sizeof(rx));
@@ -213,34 +224,15 @@ void *network_thread_f(void *ignored)
         for (int i = 0; i < n; i++) {
             char ch = rx[i];
 
-            if (ch == '\r') continue;  // 去掉 CR，避免方块
+            if (ch == '\r') continue;
             if (ch == '\n') {
                 line[line_len] = '\0';
                 if (line_len > 0) {
-                    /* 去掉末尾重复的 <ip:port>，只做显示修正 */
-                    static void trim_trailing_addr(char *s)
-                    {
-                        size_t n = strlen(s);
-                        if (n < 3) return;
-
-                        char *last_lt = strrchr(s, '<');
-                        char *last_gt = strrchr(s, '>');
-                        if (!last_lt || !last_gt || last_gt < last_lt) return;
-
-                        /* 仅当这个 <...> 在行尾时才删 */
-                        if (*(last_gt + 1) == '\0') {
-                       /* 保守判断：里面要有冒号，像 ip:port */
-                        if (strchr(last_lt, ':')) {
-                       *last_lt = '\0';
-                          /* 顺手去掉末尾空格 */
-                       while (strlen(s) > 0 && s[strlen(s) - 1] == ' ')
-                      s[strlen(s) - 1] = '\0';
-        }
-    }
-}
-
-                    fbputs(line, chat_row++, 0);
-                    if (chat_row >= divider_row) chat_row = 1;
+                    trim_trailing_addr(line);
+                    if (line[0] != '\0') {
+                        fbputs(line, chat_row++, 0);
+                        if (chat_row >= divider_row) chat_row = 1;
+                    }
                 }
                 line_len = 0;
                 continue;
@@ -256,4 +248,3 @@ void *network_thread_f(void *ignored)
 
     return NULL;
 }
-
