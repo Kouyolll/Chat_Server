@@ -1,4 +1,4 @@
-*
+/*
  *
  * CSEE 4840 Lab 2 for 2019
  *
@@ -14,6 +14,15 @@
 #include "usbkeyboard.h"
 #include "key.h"
 #include <pthread.h>
+     
+#include <linux/fb.h>
+
+extern struct fb_var_screeninfo fb_vinfo;
+extern struct fb_fix_screeninfo fb_finfo;
+extern unsigned char *framebuffer;
+
+#define FONT_WIDTH 8
+#define FONT_HEIGHT 16
 
 /* Update SERVER_HOST to be the IP address of
  * the chat server you are connecting to
