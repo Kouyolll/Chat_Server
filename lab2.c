@@ -2,7 +2,7 @@
  *
  * CSEE 4840 Lab 2 for 2019
  *
- * Name/UNI: Please Changeto Yourname (pcy2301)
+ * Name/UNI: 爸爸
  */
 #include "fbputchar.h"
 #include <stdio.h>
@@ -12,9 +12,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include "usbkeyboard.h"
-#include "key.h"
 #include <pthread.h>
-     
+
 #include <linux/fb.h>
 
 extern struct fb_var_screeninfo fb_vinfo;
@@ -33,15 +32,6 @@ extern unsigned char *framebuffer;
 
 #define BUFFER_SIZE 128
 
-/*
- * References:
- *
- * https://web.archive.org/web/20130307100215/http://beej.us/guide/bgnet/output/html/singlepage/bgnet.html
- *
- * http://www.thegeekstuff.com/2011/12/c-socket-programming/
- *
- */
-
 int sockfd; /* Socket file descriptor */
 
 struct libusb_device_handle *keyboard;
@@ -52,19 +42,68 @@ void *network_thread_f(void *);
 
 int chat_row = 1;
 int divider_row;
+int input_row;
+int screen_cols;
+
+static char input_buf[BUFFER_SIZE];
+static int input_len = 0;
+
+static int key_in_prev(uint8_t key, uint8_t prev[6])
+{
+    for (int i = 0; i < 6; i++)
+        if (prev[i] == key) return 1;
+    return 0;
+}
+
+static char hid_to_ascii(uint8_t keycode, int shifted)
+{
+    if (keycode >= 0x04 && keycode <= 0x1d) { /* a-z */
+        char c = 'a' + (keycode - 0x04);
+        if (shifted) c = c - 'a' + 'A';
+        return c;
+    }
+
+    /* 1-0 */
+    if (keycode >= 0x1e && keycode <= 0x27) {
+        const char normal[] = "1234567890";
+        const char shiftd[] = "!@#$%^&*()";
+        return shifted ? shiftd[keycode - 0x1e] : normal[keycode - 0x1e];
+    }
+
+    switch (keycode) {
+    case 0x2c: return ' ';                      /* space */
+    case 0x2d: return shifted ? '_' : '-';
+    case 0x2e: return shifted ? '+' : '=';
+    case 0x2f: return shifted ? '{' : '[';
+    case 0x30: return shifted ? '}' : ']';
+    case 0x31: return shifted ? '|' : '\\';
+    case 0x33: return shifted ? ':' : ';';
+    case 0x34: return shifted ? '"' : '\'';
+    case 0x35: return shifted ? '~' : '`';
+    case 0x36: return shifted ? '<' : ',';
+    case 0x37: return shifted ? '>' : '.';
+    case 0x38: return shifted ? '?' : '/';
+    default: return 0;
+    }
+}
+
+static void redraw_input_line(void)
+{
+    for (int c = 0; c < screen_cols; c++) fbputchar(' ', input_row, c);
+    fbputs("INPUT >", input_row, 0);
+    fbputs(input_buf, input_row, 8);
+}
 
 int main()
 {
-    int err, col;
-
+    int err;
     struct sockaddr_in serv_addr;
-
     struct usb_keyboard_packet packet;
     int transferred;
-    char keystate[12];
 
-    if ((err = fbopen()) != 0)
-    {
+    uint8_t prev_keys[6] = {0};
+
+    if ((err = fbopen()) != 0) {
         fprintf(stderr, "Error: Could not open framebuffer: %d\n", err);
         exit(1);
     }
@@ -72,37 +111,23 @@ int main()
     memset(framebuffer, 0, fb_finfo.smem_len);
 
     int screen_rows = fb_vinfo.yres / (FONT_HEIGHT * 2);
-    int screen_cols = fb_vinfo.xres / (FONT_WIDTH * 2);
+    screen_cols = fb_vinfo.xres / (FONT_WIDTH * 2);
 
     divider_row = screen_rows - 3;
+    input_row = screen_rows - 2;
 
-    for (int c = 0; c < screen_cols; c++)
-    {
-        fbputchar('-', divider_row, c);
-    }
-
+    for (int c = 0; c < screen_cols; c++) fbputchar('-', divider_row, c);
     fbputs("CHAT", 0, 0);
-    fbputs("INPUT >", screen_rows - 2, 0);
-
-    /* Draw rows of asterisks across the top and bottom of the screen
-    for (col = 0 ; col < 64 ; col++) {
-      fbputchar('*', 0, col);
-      fbputchar('*', 23, col);
-    }
-
-    fbputs("Hello CSEE 4840 World!", 4, 10);*/
-    key_input_reset();
+    redraw_input_line();
 
     /* Open the keyboard */
-    if ((keyboard = openkeyboard(&endpoint_address)) == NULL)
-    {
+    if ((keyboard = openkeyboard(&endpoint_address)) == NULL) {
         fprintf(stderr, "Did not find a keyboard\n");
         exit(1);
     }
 
     /* Create a TCP communications socket */
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-    {
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         fprintf(stderr, "Error: Could not create socket\n");
         exit(1);
     }
@@ -111,15 +136,13 @@ int main()
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(SERVER_PORT);
-    if (inet_pton(AF_INET, SERVER_HOST, &serv_addr.sin_addr) <= 0)
-    {
+    if (inet_pton(AF_INET, SERVER_HOST, &serv_addr.sin_addr) <= 0) {
         fprintf(stderr, "Error: Could not convert host IP \"%s\"\n", SERVER_HOST);
         exit(1);
     }
 
     /* Connect the socket to the server */
-    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-    {
+    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         fprintf(stderr, "Error: connect() failed.  Is the server running?\n");
         exit(1);
     }
@@ -128,31 +151,52 @@ int main()
     pthread_create(&network_thread, NULL, network_thread_f, NULL);
 
     /* Look for and handle keypresses */
-    for (;;)
-    {
+    for (;;) {
         libusb_interrupt_transfer(keyboard, endpoint_address,
                                   (unsigned char *)&packet, sizeof(packet),
                                   &transferred, 0);
-        if (transferred == sizeof(packet))
-        {
-            uint8_t report[8];
-            report[0] = packet.modifiers;
-            report[1] = packet.reserved;
-            memcpy(&report[2], packet.keycode, 6);
-            process_kbd_report(report);
-            if (packet.keycode[0] == 0x29)
-            { /* ESC pressed? */
-                break;
+
+        if (transferred != sizeof(packet)) continue;
+
+        int shifted = (packet.modifiers & 0x22) != 0; /* LSHIFT/RSHIFT */
+
+        for (int i = 0; i < 6; i++) {
+            uint8_t key = packet.keycode[i];
+            if (key == 0) continue;
+            if (key_in_prev(key, prev_keys)) continue; /* new key press only */
+
+            if (key == 0x29) { /* ESC */
+                goto done;
+            } else if (key == 0x28) { /* ENTER -> send */
+                if (input_len > 0) {
+                    write(sockfd, input_buf, input_len);
+                    write(sockfd, "\n", 1);
+                    input_len = 0;
+                    input_buf[0] = '\0';
+                    redraw_input_line();
+                }
+            } else if (key == 0x2a) { /* BACKSPACE */
+                if (input_len > 0) {
+                    input_len--;
+                    input_buf[input_len] = '\0';
+                    redraw_input_line();
+                }
+            } else {
+                char ch = hid_to_ascii(key, shifted);
+                if (ch && input_len < BUFFER_SIZE - 1) {
+                    input_buf[input_len++] = ch;
+                    input_buf[input_len] = '\0';
+                    redraw_input_line();
+                }
             }
         }
+
+        memcpy(prev_keys, packet.keycode, 6);
     }
 
-    /* Terminate the network thread */
+done:
     pthread_cancel(network_thread);
-
-    /* Wait for the network thread to finish */
     pthread_join(network_thread, NULL);
-
     return 0;
 }
 
@@ -160,16 +204,12 @@ void *network_thread_f(void *ignored)
 {
     char recvBuf[BUFFER_SIZE];
     int n;
-    /* Receive data */
-    while ((n = read(sockfd, &recvBuf, BUFFER_SIZE - 1)) > 0)
-    {
+
+    while ((n = read(sockfd, &recvBuf, BUFFER_SIZE - 1)) > 0) {
         recvBuf[n] = '\0';
         printf("%s", recvBuf);
         fbputs(recvBuf, chat_row++, 0);
-        if (chat_row >= divider_row)
-        {
-            chat_row = 1;
-        }
+        if (chat_row >= divider_row) chat_row = 1;
     }
 
     return NULL;
