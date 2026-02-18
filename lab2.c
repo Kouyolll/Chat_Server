@@ -202,15 +202,36 @@ done:
 
 void *network_thread_f(void *ignored)
 {
-    char recvBuf[BUFFER_SIZE];
-    int n;
+    char rx[BUFFER_SIZE];
+    char line[1024];
+    int line_len = 0;
 
-    while ((n = read(sockfd, &recvBuf, BUFFER_SIZE - 1)) > 0) {
-        recvBuf[n] = '\0';
-        printf("%s", recvBuf);
-        fbputs(recvBuf, chat_row++, 0);
-        if (chat_row >= divider_row) chat_row = 1;
+    while (1) {
+        int n = read(sockfd, rx, sizeof(rx));
+        if (n <= 0) break;
+
+        for (int i = 0; i < n; i++) {
+            char ch = rx[i];
+
+            if (ch == '\r') continue;  // 去掉 CR，避免方块
+            if (ch == '\n') {
+                line[line_len] = '\0';
+                if (line_len > 0) {
+                    fbputs(line, chat_row++, 0);
+                    if (chat_row >= divider_row) chat_row = 1;
+                }
+                line_len = 0;
+                continue;
+            }
+
+            if ((unsigned char)ch >= 32 && (unsigned char)ch <= 126) {
+                if (line_len < (int)sizeof(line) - 1) {
+                    line[line_len++] = ch;
+                }
+            }
+        }
     }
 
     return NULL;
 }
+
