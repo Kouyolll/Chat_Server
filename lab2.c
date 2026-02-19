@@ -13,7 +13,6 @@
 #include <unistd.h>
 #include "usbkeyboard.h"
 #include <pthread.h>
-
 #include <linux/fb.h>
 
 extern struct fb_var_screeninfo fb_vinfo;
@@ -29,7 +28,6 @@ extern unsigned char *framebuffer;
 /* arthur.cs.columbia.edu */
 #define SERVER_HOST "128.59.19.114"
 #define SERVER_PORT 42000
-
 #define BUFFER_SIZE 128
 
 int sockfd; /* Socket file descriptor */
@@ -47,6 +45,10 @@ int screen_cols;
 
 static char input_buf[BUFFER_SIZE];
 static int input_len = 0;
+static int chat_top = 1;
+static int chat_height = 0;
+static char **chat_lines = NULL; 
+static pthread_mutex_t fb_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int key_in_prev(uint8_t key, uint8_t prev[6])
 {
@@ -89,12 +91,38 @@ static char hid_to_ascii(uint8_t keycode, int shifted)
 
 static void redraw_input_line(void)
 {
+    pthread_mutex_lock(&fb_lock);
     for (int c = 0; c < screen_cols; c++) fbputchar(' ', input_row, c);
     fbputs("INPUT >", input_row, 0);
     fbputs(input_buf, input_row, 8);
+    pthread_mutex_unlock(&fb_lock);
 }
 
-/* Remove duplicated address fragments after the first <ip:port> prefix */
+static void chat_push_line(const char *s)
+{
+
+    char *tmp = chat_lines[0];
+    for (int r = 0; r < chat_height - 1; r++) {
+        chat_lines[r] = chat_lines[r + 1];
+    }
+    chat_lines[chat_height - 1] = tmp;
+    memset(chat_lines[chat_height - 1], ' ', screen_cols);
+    for (int i = 0; s[i] && i < screen_cols; i++) {
+        chat_lines[chat_height - 1][i] = s[i];
+    }
+    chat_lines[chat_height - 1][screen_cols] = '\0';
+}
+
+static void chat_redraw(void)
+{
+    for (int r = 0; r < chat_height; r++) {
+        int fb_row = chat_top + r;
+
+        for (int c = 0; c < screen_cols; c++) fbputchar(' ', fb_row, c);
+        fbputs(chat_lines[r], fb_row, 0);
+    }
+}
+
 static void strip_extra_addr_fragments(char *s)
 {
     char out[1024];
@@ -162,6 +190,15 @@ int main()
 
     divider_row = screen_rows - 3;
     input_row = screen_rows - 2;
+
+    chat_height = divider_row - chat_top;  
+
+    chat_lines = calloc(chat_height, sizeof(char *));
+    for (int r = 0; r < chat_height; r++) {
+        chat_lines[r] = calloc(screen_cols + 1, 1);
+        memset(chat_lines[r], ' ', screen_cols);
+        chat_lines[r][screen_cols] = '\0';
+    }
 
     for (int c = 0; c < screen_cols; c++) fbputchar('-', divider_row, c);
     fbputs("CHAT", 0, 0);
@@ -261,8 +298,13 @@ void *network_thread_f(void *ignored)
                 if (line_len > 0) {
                     strip_extra_addr_fragments(line);
                     if (line[0] != '\0') {
-                        fbputs(line, chat_row++, 0);
-                        if (chat_row >= divider_row) chat_row = 1;
+                        
+                        pthread_mutex_lock(&fb_lock);
+                        strip_extra_addr_fragments(line);
+                        chat_push_line(line);
+                        chat_redraw();
+                        redraw_input_line();   
+                        pthread_mutex_unlock(&fb_lock);
                     }
                 }
                 line_len = 0;
