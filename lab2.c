@@ -89,12 +89,17 @@ static char hid_to_ascii(uint8_t keycode, int shifted)
     }
 }
 
-static void redraw_input_line(void)
+static void redraw_input_line_locked(void)
 {
-    pthread_mutex_lock(&fb_lock);
     for (int c = 0; c < screen_cols; c++) fbputchar(' ', input_row, c);
     fbputs("INPUT >", input_row, 0);
     fbputs(input_buf, input_row, 8);
+}
+
+static void redraw_input_line(void)
+{
+    pthread_mutex_lock(&fb_lock);
+    redraw_input_line_locked();
     pthread_mutex_unlock(&fb_lock);
 }
 
@@ -113,7 +118,7 @@ static void chat_push_line(const char *s)
     chat_lines[chat_height - 1][screen_cols] = '\0';
 }
 
-static void chat_redraw(void)
+static void chat_redraw_locked(void)
 {
     for (int r = 0; r < chat_height; r++) {
         int fb_row = chat_top + r;
@@ -302,8 +307,8 @@ void *network_thread_f(void *ignored)
                         pthread_mutex_lock(&fb_lock);
                         strip_extra_addr_fragments(line);
                         chat_push_line(line);
-                        chat_redraw();
-                        redraw_input_line();   
+                        chat_redraw_locked();
+                        redraw_input_line_locked();   
                         pthread_mutex_unlock(&fb_lock);
                     }
                 }
