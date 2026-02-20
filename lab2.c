@@ -1,5 +1,4 @@
 /*
- *
  * CSEE 4840 Lab 2 for 2019
  *
  * Name/UNI: baba
@@ -542,6 +541,20 @@ static void sanitize_outgoing_message(char *s)
 {
     trim_right(s);
 
+    /* Remove any embedded <ip:port> tags anywhere in the outgoing text. */
+    char *scan = s;
+    while ((scan = strchr(scan, '<')) != NULL) {
+        char *gt = strchr(scan + 1, '>');
+        if (gt == NULL) break;
+
+        int token_len = (int)(gt - (scan + 1));
+        if (token_len > 0 && is_endpoint_token(scan + 1, token_len)) {
+            memmove(scan, gt + 1, strlen(gt + 1) + 1);
+            continue;
+        }
+        scan++;
+    }
+
     for (;;) {
         int len = (int)strlen(s);
         if (len <= 0 || s[len - 1] != '>') break;
@@ -792,7 +805,7 @@ int main()
                     int tx_len = (int)strlen(tx);
                     if (tx_len > 0) {
                         write(sockfd, tx, tx_len);
-                        // write(sockfd, "\n", 1);
+                        write(sockfd, "\n", 1);
                     }
                     input_len = 0;
                     input_cursor = 0;
