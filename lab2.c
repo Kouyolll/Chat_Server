@@ -788,7 +788,9 @@ int main()
                     char tx[BUFFER_SIZE];
                     memcpy(tx, input_buf, (size_t)input_len);
                     tx[input_len] = '\0';
+                    printf("first: %s\n", tx);
                     sanitize_outgoing_message(tx);
+                    printf("second: %s\n", tx);
                     int tx_len = (int)strlen(tx);
                     if (tx_len > 0) {
                         write(sockfd, tx, tx_len);
