@@ -16,6 +16,7 @@
 #include <linux/fb.h>
 #include <ctype.h>
 #include <stdint.h>
+#include <time.h>
 
 extern struct fb_var_screeninfo fb_vinfo;
 extern struct fb_fix_screeninfo fb_finfo;
@@ -32,7 +33,7 @@ extern unsigned char *framebuffer;
 #define SERVER_PORT 42000
 #define BUFFER_SIZE 128
 #define INPUT_PROMPT "INPUT > "
-#define INPUT_ROWS 3
+#define INPUT_ROWS 2
 
 #define KEY_ESC 0x29
 #define KEY_ENTER 0x28
@@ -54,6 +55,7 @@ uint8_t endpoint_address;
 
 pthread_t network_thread;
 void *network_thread_f(void *);
+static void redraw_input_line(void);
 
 int divider_row;
 int input_row;
@@ -63,6 +65,8 @@ int input_rows = INPUT_ROWS;
 static char input_buf[BUFFER_SIZE];
 static int input_len = 0;
 static int input_cursor = 0;
+static int cursor_visible = 1;
+static uint64_t cursor_blink_start_ms = 0;
 static int chat_top = 1;
 static int chat_height = 0;
 static int chat_used = 0;
@@ -72,6 +76,37 @@ static char **chat_lines = NULL;
 static uint32_t *chat_colors = NULL;
 
 static pthread_mutex_t fb_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static uint64_t now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static void reset_cursor_blink(void)
+{
+    cursor_blink_start_ms = now_ms();
+    cursor_visible = 1;
+}
+
+static void maybe_update_cursor_blink(void)
+{
+    uint64_t elapsed = now_ms() - cursor_blink_start_ms;
+    int visible = ((elapsed / 500u) % 2u) == 0u;
+    if (visible != cursor_visible) {
+        cursor_visible = visible;
+        redraw_input_line();
+    }
+}
+
+static int key_down_now(uint8_t key, const uint8_t keys[6])
+{
+    for (int i = 0; i < 6; i++) {
+        if (keys[i] == key) return 1;
+    }
+    return 0;
+}
 
 static int key_in_prev(uint8_t key, uint8_t prev[6])
 {
@@ -238,7 +273,7 @@ static void redraw_input_line_locked(void)
         row++;
     }
 
-    fbputchar('|', c_row, c_col);
+    if (cursor_visible) fbputchar('|', c_row, c_col);
 }
 
 static void redraw_input_line(void)
@@ -246,6 +281,16 @@ static void redraw_input_line(void)
     pthread_mutex_lock(&fb_lock);
     redraw_input_line_locked();
     pthread_mutex_unlock(&fb_lock);
+}
+
+static void delete_before_cursor(void)
+{
+    if (input_cursor <= 0) return;
+    memmove(input_buf + input_cursor - 1,
+            input_buf + input_cursor,
+            (size_t)(input_len - input_cursor + 1));
+    input_cursor--;
+    input_len--;
 }
 
 static void chat_push_line(const char *s, uint32_t color)
@@ -408,6 +453,7 @@ static void clear_chat_and_input_locked(void)
     input_len = 0;
     input_cursor = 0;
     input_buf[0] = '\0';
+    reset_cursor_blink();
 
     for (int c = 0; c < screen_cols; c++) fbputchar('-', divider_row, c);
     fbputs("CHAT", 0, 0);
@@ -422,6 +468,9 @@ int main()
     int transferred;
     uint8_t prev_keys[6] = {0};
     uint8_t prev_modifiers = 0;
+    int backspace_repeat_ticks = 0;
+    int left_repeat_ticks = 0;
+    int right_repeat_ticks = 0;
 
     if ((err = fbopen()) != 0) {
         fprintf(stderr, "Error: Could not open framebuffer: %d\n", err);
@@ -455,6 +504,7 @@ int main()
 
     for (int c = 0; c < screen_cols; c++) fbputchar('-', divider_row, c);
     fbputs("CHAT", 0, 0);
+    reset_cursor_blink();
     redraw_input_line();
 
     if ((keyboard = openkeyboard(&endpoint_address)) == NULL) {
@@ -484,10 +534,14 @@ int main()
     pthread_create(&network_thread, NULL, network_thread_f, NULL);
 
     for (;;) {
-        libusb_interrupt_transfer(keyboard, endpoint_address,
-                                  (unsigned char *)&packet, sizeof(packet),
-                                  &transferred, 0);
-        if (transferred != sizeof(packet)) continue;
+        int rc = libusb_interrupt_transfer(keyboard, endpoint_address,
+                                           (unsigned char *)&packet, sizeof(packet),
+                                           &transferred, 30);
+        if (rc == LIBUSB_ERROR_TIMEOUT) {
+            maybe_update_cursor_blink();
+            continue;
+        }
+        if (rc != 0 || transferred != sizeof(packet)) continue;
 
         int shifted = (packet.modifiers & 0x22) != 0;
         int win_down = (packet.modifiers & (MOD_LGUI | MOD_RGUI)) != 0;
@@ -512,6 +566,7 @@ int main()
                 pthread_mutex_lock(&fb_lock);
                 clear_chat_and_input_locked();
                 pthread_mutex_unlock(&fb_lock);
+                reset_cursor_blink();
             } else if (key == KEY_ENTER) {
                 if (input_len > 0) {
                     write(sockfd, input_buf, input_len);
@@ -519,25 +574,25 @@ int main()
                     input_len = 0;
                     input_cursor = 0;
                     input_buf[0] = '\0';
+                    reset_cursor_blink();
                     redraw_input_line();
                 }
             } else if (key == KEY_LEFT) {
                 if (input_cursor > 0) {
                     input_cursor--;
+                    reset_cursor_blink();
                     redraw_input_line();
                 }
             } else if (key == KEY_RIGHT) {
                 if (input_cursor < input_len) {
                     input_cursor++;
+                    reset_cursor_blink();
                     redraw_input_line();
                 }
             } else if (key == KEY_BACKSPACE) {
                 if (input_cursor > 0) {
-                    memmove(input_buf + input_cursor - 1,
-                            input_buf + input_cursor,
-                            (size_t)(input_len - input_cursor + 1));
-                    input_cursor--;
-                    input_len--;
+                    delete_before_cursor();
+                    reset_cursor_blink();
                     redraw_input_line();
                 }
             } else {
@@ -549,13 +604,48 @@ int main()
                     input_buf[input_cursor] = ch;
                     input_cursor++;
                     input_len++;
+                    reset_cursor_blink();
                     redraw_input_line();
                 }
             }
         }
 
+        if (key_down_now(KEY_BACKSPACE, packet.keycode)) {
+            backspace_repeat_ticks++;
+            if (backspace_repeat_ticks >= 9 && (backspace_repeat_ticks % 2) == 0 && input_cursor > 0) {
+                delete_before_cursor();
+                reset_cursor_blink();
+                redraw_input_line();
+            }
+        } else {
+            backspace_repeat_ticks = 0;
+        }
+
+        if (key_down_now(KEY_LEFT, packet.keycode)) {
+            left_repeat_ticks++;
+            if (left_repeat_ticks >= 9 && (left_repeat_ticks % 2) == 0 && input_cursor > 0) {
+                input_cursor--;
+                reset_cursor_blink();
+                redraw_input_line();
+            }
+        } else {
+            left_repeat_ticks = 0;
+        }
+
+        if (key_down_now(KEY_RIGHT, packet.keycode)) {
+            right_repeat_ticks++;
+            if (right_repeat_ticks >= 9 && (right_repeat_ticks % 2) == 0 && input_cursor < input_len) {
+                input_cursor++;
+                reset_cursor_blink();
+                redraw_input_line();
+            }
+        } else {
+            right_repeat_ticks = 0;
+        }
+
         memcpy(prev_keys, packet.keycode, 6);
         prev_modifiers = packet.modifiers;
+        maybe_update_cursor_blink();
     }
 
 done:
