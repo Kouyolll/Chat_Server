@@ -1,7 +1,7 @@
 /*
- * CSEE 4840 Lab 2 for 2019
+ * CSEE 4840 Lab 2 for 2026
  *
- * Name/UNI: baba
+ * Name/UNI: Chengcheng Xu(cx2355) Harvey Lu(hl3999) Yizheng Tang(yt2992)
  */
 #include "fbputchar.h"
 #include "chat_utils.h"
