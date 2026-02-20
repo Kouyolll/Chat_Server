@@ -14,6 +14,8 @@
 #include "usbkeyboard.h"
 #include <pthread.h>
 #include <linux/fb.h>
+#include <ctype.h>
+#include <stdint.h>
 
 extern struct fb_var_screeninfo fb_vinfo;
 extern struct fb_fix_screeninfo fb_finfo;
@@ -29,6 +31,21 @@ extern unsigned char *framebuffer;
 #define SERVER_HOST "128.59.19.114"
 #define SERVER_PORT 42000
 #define BUFFER_SIZE 128
+#define INPUT_PROMPT "INPUT > "
+#define INPUT_ROWS 3
+
+#define KEY_ESC 0x29
+#define KEY_ENTER 0x28
+#define KEY_BACKSPACE 0x2a
+#define KEY_CAPS_LOCK 0x39
+#define KEY_RIGHT 0x4f
+#define KEY_LEFT 0x50
+#define KEY_F12 0x45
+
+#define MOD_LALT 0x04
+#define MOD_LGUI 0x08
+#define MOD_RALT 0x40
+#define MOD_RGUI 0x80
 
 int sockfd; /* Socket file descriptor */
 
@@ -38,18 +55,21 @@ uint8_t endpoint_address;
 pthread_t network_thread;
 void *network_thread_f(void *);
 
-int chat_row = 1;
 int divider_row;
 int input_row;
 int screen_cols;
-
+int input_rows = INPUT_ROWS;
 
 static char input_buf[BUFFER_SIZE];
 static int input_len = 0;
+static int input_cursor = 0;
 static int chat_top = 1;
 static int chat_height = 0;
 static int chat_used = 0;
+static int caps_lock_on = 0;
+
 static char **chat_lines = NULL;
+static uint32_t *chat_colors = NULL;
 
 static pthread_mutex_t fb_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -61,11 +81,23 @@ static int key_in_prev(uint8_t key, uint8_t prev[6])
     return 0;
 }
 
-static char hid_to_ascii(uint8_t keycode, int shifted)
+static uint32_t make_rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+static void split_rgb(uint32_t color, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    *r = (uint8_t)((color >> 16) & 0xffu);
+    *g = (uint8_t)((color >> 8) & 0xffu);
+    *b = (uint8_t)(color & 0xffu);
+}
+
+static char hid_to_ascii(uint8_t keycode, int shifted, int caps_on)
 {
     if (keycode >= 0x04 && keycode <= 0x1d) {
         char c = 'a' + (keycode - 0x04);
-        if (shifted) c = (char)(c - 'a' + 'A');
+        if ((shifted ^ caps_on) != 0) c = (char)(c - 'a' + 'A');
         return c;
     }
 
@@ -92,11 +124,121 @@ static char hid_to_ascii(uint8_t keycode, int shifted)
     }
 }
 
+static int next_wrap_chunk(const char *s, int start, int width, char *out, int outsz, int *next_start)
+{
+    int len = (int)strlen(s);
+    int i = start;
+
+    while (i < len && s[i] == ' ') i++;
+    if (i >= len || width <= 0) {
+        out[0] = '\0';
+        *next_start = len;
+        return 0;
+    }
+
+    if (len - i <= width) {
+        int n = len - i;
+        if (n >= outsz) n = outsz - 1;
+        memcpy(out, s + i, n);
+        out[n] = '\0';
+        *next_start = len;
+        return n;
+    }
+
+    int hard = i + width;
+    int split = -1;
+    for (int p = hard; p > i; p--) {
+        if (s[p] == ' ') {
+            split = p;
+            break;
+        }
+    }
+
+    int end = (split == -1) ? hard : split;
+    int n = end - i;
+    if (n >= outsz) n = outsz - 1;
+    memcpy(out, s + i, n);
+    out[n] = '\0';
+
+    i = end;
+    while (i < len && s[i] == ' ') i++;
+    *next_start = i;
+    return n;
+}
+
+static int input_line_end(int start, int width)
+{
+    if (start >= input_len) return input_len;
+    if (width <= 0) return start;
+
+    int hard = start + width;
+    if (hard >= input_len) return input_len;
+
+    for (int p = hard; p > start; p--) {
+        if (input_buf[p - 1] == ' ') return p;
+    }
+    return hard;
+}
+
 static void redraw_input_line_locked(void)
 {
-    for (int c = 0; c < screen_cols; c++) fbputchar(' ', input_row, c);
-    fbputs("INPUT >", input_row, 0);
-    fbputs(input_buf, input_row, 8);
+    int prompt_len = (int)strlen(INPUT_PROMPT);
+
+    for (int r = 0; r < input_rows; r++) {
+        int fb_row = input_row + r;
+        for (int c = 0; c < screen_cols; c++) fbputchar(' ', fb_row, c);
+    }
+
+    fbputs(INPUT_PROMPT, input_row, 0);
+
+    int pos = 0;
+    int row = 0;
+    while (pos < input_len && row < input_rows) {
+        int width = (row == 0) ? (screen_cols - prompt_len) : screen_cols;
+        int col = (row == 0) ? prompt_len : 0;
+        char chunk[BUFFER_SIZE];
+        int next = input_line_end(pos, width);
+        int n = next - pos;
+        if (n <= 0) break;
+        if (n >= (int)sizeof(chunk)) n = (int)sizeof(chunk) - 1;
+        memcpy(chunk, input_buf + pos, (size_t)n);
+        chunk[n] = '\0';
+        fbputs(chunk, input_row + row, col);
+
+        pos = next;
+        row++;
+    }
+
+    int c_row = input_row + input_rows - 1;
+    int c_col = screen_cols - 1;
+    int start = 0;
+    row = 0;
+    while (row < input_rows) {
+        int width = (row == 0) ? (screen_cols - prompt_len) : screen_cols;
+        int base_col = (row == 0) ? prompt_len : 0;
+        int hard = start + width;
+        int end = input_line_end(start, width);
+        int cursor_on_this_row =
+            (input_cursor < end) ||
+            (input_cursor == end && (end == input_len || end != hard)) ||
+            (row == input_rows - 1);
+
+        if (cursor_on_this_row) {
+            int rel = input_cursor - start;
+            if (rel < 0) rel = 0;
+            if (rel >= width) rel = width - 1;
+            if (rel < 0) rel = 0;
+            c_row = input_row + row;
+            c_col = base_col + rel;
+            if (c_col >= screen_cols) c_col = screen_cols - 1;
+            break;
+        }
+
+        start = end;
+        row++;
+    }
+
+    fbputchar('|', c_row, c_col);
 }
 
 static void redraw_input_line(void)
@@ -106,49 +248,41 @@ static void redraw_input_line(void)
     pthread_mutex_unlock(&fb_lock);
 }
 
-static void chat_push_line(const char *s)
+static void chat_push_line(const char *s, uint32_t color)
 {
-
     char *dst = NULL;
 
     if (chat_used < chat_height) {
         dst = chat_lines[chat_used];
         chat_used++;
     } else {
-        
         char *tmp = chat_lines[0];
         for (int r = 0; r < chat_height - 1; r++) {
             chat_lines[r] = chat_lines[r + 1];
+            chat_colors[r] = chat_colors[r + 1];
         }
         chat_lines[chat_height - 1] = tmp;
         dst = chat_lines[chat_height - 1];
     }
 
     memset(dst, ' ', screen_cols);
-    for (int i = 0; s[i] && i < screen_cols; i++) {
-        dst[i] = s[i];
-    }
+    for (int i = 0; s[i] && i < screen_cols; i++) dst[i] = s[i];
     dst[screen_cols] = '\0';
+    chat_colors[chat_used - 1] = color;
 }
 
-static void chat_push_wrapped(const char *msg)
+static void chat_push_wrapped(const char *msg, uint32_t color)
 {
-    int L = (int)strlen(msg);
-    int i = 0;
+    int len = (int)strlen(msg);
+    int pos = 0;
+    if (len == 0) return;
 
-
-    if (L == 0) return;
-
-    while (i < L) {
+    while (pos < len) {
         char chunk[1024];
-        int take = L - i;
-        if (take > screen_cols) take = screen_cols;
-
-        memcpy(chunk, msg + i, take);
-        chunk[take] = '\0';
-
-        chat_push_line(chunk);
-        i += take;
+        int next = pos;
+        if (next_wrap_chunk(msg, pos, screen_cols, chunk, sizeof(chunk), &next) <= 0) break;
+        chat_push_line(chunk, color);
+        pos = next;
     }
 }
 
@@ -156,65 +290,99 @@ static void chat_redraw_locked(void)
 {
     for (int r = 0; r < chat_height; r++) {
         int fb_row = chat_top + r;
-
         for (int c = 0; c < screen_cols; c++) fbputchar(' ', fb_row, c);
-        fbputs(chat_lines[r], fb_row, 0);
+
+        if (r < chat_used) {
+            uint8_t cr, cg, cb;
+            split_rgb(chat_colors[r], &cr, &cg, &cb);
+            fbputs_color(chat_lines[r], fb_row, 0, cr, cg, cb);
+        }
     }
 }
 
-static void strip_extra_addr_fragments(char *s)
+static void trim_right(char *s)
 {
-    char out[1024];
-    int j = 0;
-    int i = 0;
-
-    char *first_lt = strchr(s, '<');
-    char *first_gt = first_lt ? strchr(first_lt, '>') : NULL;
-
-    if (first_lt && first_gt && first_lt == s) {
-        while (s[i] && &s[i] <= first_gt && j < (int)sizeof(out) - 1) {
-            out[j++] = s[i++];
-        }
+    int n = (int)strlen(s);
+    while (n > 0 && s[n - 1] == ' ') {
+        s[n - 1] = '\0';
+        n--;
     }
-
-    while (s[i] && j < (int)sizeof(out) - 1) {
-        /* Remove any <...> block after prefix */
-        if (s[i] == '<') {
-            i++;
-            while (s[i] && s[i] != '>') i++;
-            if (s[i] == '>') i++;
-            continue;
-        }
-       
-        /* Remove dangling fragments like :35418> or 35418> */
-        if (s[i] == ':' || (s[i] >= '0' && s[i] <= '9')) {
-            int k = i;
-            if (s[k] == ':') k++;
-            int d = 0;
-            while (s[k] >= '0' && s[k] <= '9' && d < 8) {
-                k++;
-                d++;
-            }
-            if (d > 0 && s[k] == '>') {
-                i = k + 1;
-                continue;
-            }
-        }
-
-        out[j++] = s[i++];
-    }
-
-    while (j > 0 && out[j - 1] == ' ') j--;
-    out[j] = '\0';
-    strcpy(s, out);
 }
 
-static void drop_anything_after_second_prefix(char *s) {
-    if (s[0] != '<') return;
-    char *gt = strchr(s, '>');
-    if (!gt) return;
-    char *p = strchr(gt + 1, '<');
-    if (p) *p = '\0';
+static void sanitize_server_line(char *s)
+{
+    trim_right(s);
+    if (s[0] == '<') {
+        char *gt = strchr(s, '>');
+        if (gt != NULL) {
+            char *dup = strchr(gt + 1, '<');
+            if (dup != NULL) *dup = '\0';
+            trim_right(s);
+        }
+    }
+}
+
+static int extract_first_ipv4(const char *s, char *out, size_t outsz)
+{
+    for (int i = 0; s[i] != '\0'; i++) {
+        if (!isdigit((unsigned char)s[i])) continue;
+
+        unsigned int a, b, c, d;
+        int n = 0;
+        if (sscanf(s + i, "%3u.%3u.%3u.%3u%n", &a, &b, &c, &d, &n) == 4) {
+            if (a <= 255 && b <= 255 && c <= 255 && d <= 255 && n > 0) {
+                if ((size_t)n >= outsz) n = (int)outsz - 1;
+                memcpy(out, s + i, (size_t)n);
+                out[n] = '\0';
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static uint32_t color_for_ip_text(const char *ip)
+{
+    static const uint32_t palette[] = {
+        0xFFD166, 0x06D6A0, 0x4CC9F0, 0xF72585,
+        0x90BE6D, 0xF9844A, 0xB8C0FF, 0xFF99C8
+    };
+
+    unsigned int h = 2166136261u;
+    for (int i = 0; ip[i] != '\0'; i++) {
+        h ^= (unsigned char)ip[i];
+        h *= 16777619u;
+    }
+    return palette[h % (sizeof(palette) / sizeof(palette[0]))];
+}
+
+static uint32_t color_for_message(const char *line)
+{
+    char ip[64];
+    if (extract_first_ipv4(line, ip, sizeof(ip))) {
+        return color_for_ip_text(ip);
+    }
+    return make_rgb(255, 255, 255);
+}
+
+static void clear_chat_and_input_locked(void)
+{
+    memset(framebuffer, 0, fb_finfo.smem_len);
+
+    chat_used = 0;
+    for (int r = 0; r < chat_height; r++) {
+        memset(chat_lines[r], ' ', screen_cols);
+        chat_lines[r][screen_cols] = '\0';
+        chat_colors[r] = make_rgb(255, 255, 255);
+    }
+
+    input_len = 0;
+    input_cursor = 0;
+    input_buf[0] = '\0';
+
+    for (int c = 0; c < screen_cols; c++) fbputchar('-', divider_row, c);
+    fbputs("CHAT", 0, 0);
+    redraw_input_line_locked();
 }
 
 int main()
@@ -224,6 +392,7 @@ int main()
     struct usb_keyboard_packet packet;
     int transferred;
     uint8_t prev_keys[6] = {0};
+    uint8_t prev_modifiers = 0;
 
     if ((err = fbopen()) != 0) {
         fprintf(stderr, "Error: Could not open framebuffer: %d\n", err);
@@ -235,16 +404,24 @@ int main()
     int screen_rows = fb_vinfo.yres / (FONT_HEIGHT * 2);
     screen_cols = fb_vinfo.xres / (FONT_WIDTH * 2);
 
-    divider_row = screen_rows - 4;
-    input_row = screen_rows - 3;
+    if (screen_rows < 8) {
+        fprintf(stderr, "Error: screen too small\n");
+        exit(1);
+    }
 
-    chat_height = divider_row - chat_top;  
+    divider_row = screen_rows - (INPUT_ROWS + 1);
+    input_row = divider_row + 1;
+    input_rows = screen_rows - input_row;
+
+    chat_height = divider_row - chat_top;
 
     chat_lines = calloc(chat_height, sizeof(char *));
+    chat_colors = calloc(chat_height, sizeof(uint32_t));
     for (int r = 0; r < chat_height; r++) {
-        chat_lines[r] = calloc(screen_cols + 1, 1);
+        chat_lines[r] = calloc((size_t)screen_cols + 1, 1);
         memset(chat_lines[r], ' ', screen_cols);
         chat_lines[r][screen_cols] = '\0';
+        chat_colors[r] = make_rgb(255, 255, 255);
     }
 
     for (int c = 0; c < screen_cols; c++) fbputchar('-', divider_row, c);
@@ -284,41 +461,72 @@ int main()
         if (transferred != sizeof(packet)) continue;
 
         int shifted = (packet.modifiers & 0x22) != 0;
+        int win_down = (packet.modifiers & (MOD_LGUI | MOD_RGUI)) != 0;
+        int win_prev_down = (prev_modifiers & (MOD_LGUI | MOD_RGUI)) != 0;
+        if (win_down && !win_prev_down) {
+            pthread_mutex_lock(&fb_lock);
+            clear_chat_and_input_locked();
+            pthread_mutex_unlock(&fb_lock);
+        }
 
         for (int i = 0; i < 6; i++) {
             uint8_t key = packet.keycode[i];
             if (key == 0) continue;
             if (key_in_prev(key, prev_keys)) continue;
 
-            if (key == 0x29) {
+            if (key == KEY_ESC) {
                 goto done;
-            } else if (key == 0x28) {
+            } else if (key == KEY_CAPS_LOCK) {
+                caps_lock_on = !caps_lock_on;
+            } else if (key == KEY_F12 &&
+                       (packet.modifiers & (MOD_LALT | MOD_RALT)) != 0) {
+                pthread_mutex_lock(&fb_lock);
+                clear_chat_and_input_locked();
+                pthread_mutex_unlock(&fb_lock);
+            } else if (key == KEY_ENTER) {
                 if (input_len > 0) {
                     write(sockfd, input_buf, input_len);
                     write(sockfd, "\n", 1);
                     input_len = 0;
+                    input_cursor = 0;
                     input_buf[0] = '\0';
                     redraw_input_line();
                 }
-            } else if (key == 0x2a) {
-                if (input_len > 0) {
+            } else if (key == KEY_LEFT) {
+                if (input_cursor > 0) {
+                    input_cursor--;
+                    redraw_input_line();
+                }
+            } else if (key == KEY_RIGHT) {
+                if (input_cursor < input_len) {
+                    input_cursor++;
+                    redraw_input_line();
+                }
+            } else if (key == KEY_BACKSPACE) {
+                if (input_cursor > 0) {
+                    memmove(input_buf + input_cursor - 1,
+                            input_buf + input_cursor,
+                            (size_t)(input_len - input_cursor + 1));
+                    input_cursor--;
                     input_len--;
-                    input_buf[input_len] = '\0';
                     redraw_input_line();
                 }
             } else {
-                char ch = hid_to_ascii(key, shifted);
-                int max_input = screen_cols - 8;             
-
-                if (ch && input_len < BUFFER_SIZE - 1 && input_len < max_input) {
-                    input_buf[input_len++] = ch;
-                    input_buf[input_len] = '\0';
+                char ch = hid_to_ascii(key, shifted, caps_lock_on);
+                if (ch && input_len < BUFFER_SIZE - 1) {
+                    memmove(input_buf + input_cursor + 1,
+                            input_buf + input_cursor,
+                            (size_t)(input_len - input_cursor + 1));
+                    input_buf[input_cursor] = ch;
+                    input_cursor++;
+                    input_len++;
                     redraw_input_line();
                 }
             }
         }
 
         memcpy(prev_keys, packet.keycode, 6);
+        prev_modifiers = packet.modifiers;
     }
 
 done:
@@ -345,16 +553,13 @@ void *network_thread_f(void *ignored)
             if (ch == '\n') {
                 line[line_len] = '\0';
                 if (line_len > 0) {
-                    printf("RAW LINE=[%s]\n", line);
-                    strip_extra_addr_fragments(line);
-                    drop_anything_after_second_prefix(line);
-                    printf("AFTER STRIP=[%s]\n", line);
+                    sanitize_server_line(line);
                     if (line[0] != '\0') {
-                        
+                        uint32_t color = color_for_message(line);
                         pthread_mutex_lock(&fb_lock);
-                        chat_push_wrapped(line);
+                        chat_push_wrapped(line, color);
                         chat_redraw_locked();
-                        redraw_input_line_locked();   
+                        redraw_input_line_locked();
                         pthread_mutex_unlock(&fb_lock);
                     }
                 }
