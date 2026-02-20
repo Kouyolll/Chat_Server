@@ -178,14 +178,14 @@ static void strip_extra_addr_fragments(char *s)
     }
 
     while (s[i] && j < (int)sizeof(out) - 1) {
-        /* Remove any <...> block after prefix 
+        /* Remove any <...> block after prefix */
         if (s[i] == '<') {
             i++;
             while (s[i] && s[i] != '>') i++;
             if (s[i] == '>') i++;
             continue;
         }
-       */
+       
         /* Remove dangling fragments like :35418> or 35418> */
         if (s[i] == ':' || (s[i] >= '0' && s[i] <= '9')) {
             int k = i;
@@ -337,7 +337,9 @@ void *network_thread_f(void *ignored)
             if (ch == '\n') {
                 line[line_len] = '\0';
                 if (line_len > 0) {
-                    //strip_extra_addr_fragments(line);
+                    printf("RAW LINE=[%s]\n", line);
+                    strip_extra_addr_fragments(line);
+                    printf("AFTER STRIP=[%s]\n", line);
                     if (line[0] != '\0') {
                         
                         pthread_mutex_lock(&fb_lock);
