@@ -799,12 +799,16 @@ int main()
             } else if (key == KEY_ENTER) {
                 if (input_len > 0) {
                     char tx[BUFFER_SIZE];
+                    char out[BUFFER_SIZE + 2];
                     memcpy(tx, input_buf, (size_t)input_len);
                     tx[input_len] = '\0';
                     sanitize_outgoing_message(tx);
                     int tx_len = (int)strlen(tx);
                     if (tx_len > 0) {
-                        write(sockfd, tx, tx_len);
+                        memcpy(out, tx, (size_t)tx_len);
+                        out[tx_len] = '\n';
+                        out[tx_len + 1] = '\0';
+                        write(sockfd, out, (size_t)tx_len + 1);
                     }
                     input_len = 0;
                     input_cursor = 0;
