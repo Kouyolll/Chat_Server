@@ -416,7 +416,7 @@ static void clear_chat_and_input_locked(void)
     reset_cursor_blink();
 
     for (int c = 0; c < screen_cols; c++) fbputchar('-', divider_row, c);
-    fbputs("CHAT", 0, 0);
+    fbputs("CHAT >", 0, 0);
     redraw_input_line_locked();
 }
 
