@@ -293,6 +293,51 @@ static void delete_before_cursor(void)
     input_len--;
 }
 
+static void process_hold_repeats(const uint8_t keys[6],
+                                 int *backspace_repeat_ticks,
+                                 int *left_repeat_ticks,
+                                 int *right_repeat_ticks)
+{
+    if (key_down_now(KEY_BACKSPACE, keys)) {
+        (*backspace_repeat_ticks)++;
+        if (*backspace_repeat_ticks >= 9 &&
+            ((*backspace_repeat_ticks) % 2) == 0 &&
+            input_cursor > 0) {
+            delete_before_cursor();
+            reset_cursor_blink();
+            redraw_input_line();
+        }
+    } else {
+        *backspace_repeat_ticks = 0;
+    }
+
+    if (key_down_now(KEY_LEFT, keys)) {
+        (*left_repeat_ticks)++;
+        if (*left_repeat_ticks >= 9 &&
+            ((*left_repeat_ticks) % 2) == 0 &&
+            input_cursor > 0) {
+            input_cursor--;
+            reset_cursor_blink();
+            redraw_input_line();
+        }
+    } else {
+        *left_repeat_ticks = 0;
+    }
+
+    if (key_down_now(KEY_RIGHT, keys)) {
+        (*right_repeat_ticks)++;
+        if (*right_repeat_ticks >= 9 &&
+            ((*right_repeat_ticks) % 2) == 0 &&
+            input_cursor < input_len) {
+            input_cursor++;
+            reset_cursor_blink();
+            redraw_input_line();
+        }
+    } else {
+        *right_repeat_ticks = 0;
+    }
+}
+
 static void chat_push_line(const char *s, uint32_t color)
 {
     char *dst = NULL;
@@ -468,6 +513,8 @@ int main()
     int transferred;
     uint8_t prev_keys[6] = {0};
     uint8_t prev_modifiers = 0;
+    uint8_t held_keys[6] = {0};
+    int have_held_report = 0;
     int backspace_repeat_ticks = 0;
     int left_repeat_ticks = 0;
     int right_repeat_ticks = 0;
@@ -538,6 +585,12 @@ int main()
                                            (unsigned char *)&packet, sizeof(packet),
                                            &transferred, 30);
         if (rc == LIBUSB_ERROR_TIMEOUT) {
+            if (have_held_report) {
+                process_hold_repeats(held_keys,
+                                     &backspace_repeat_ticks,
+                                     &left_repeat_ticks,
+                                     &right_repeat_ticks);
+            }
             maybe_update_cursor_blink();
             continue;
         }
@@ -610,40 +663,14 @@ int main()
             }
         }
 
-        if (key_down_now(KEY_BACKSPACE, packet.keycode)) {
-            backspace_repeat_ticks++;
-            if (backspace_repeat_ticks >= 9 && (backspace_repeat_ticks % 2) == 0 && input_cursor > 0) {
-                delete_before_cursor();
-                reset_cursor_blink();
-                redraw_input_line();
-            }
-        } else {
-            backspace_repeat_ticks = 0;
-        }
-
-        if (key_down_now(KEY_LEFT, packet.keycode)) {
-            left_repeat_ticks++;
-            if (left_repeat_ticks >= 9 && (left_repeat_ticks % 2) == 0 && input_cursor > 0) {
-                input_cursor--;
-                reset_cursor_blink();
-                redraw_input_line();
-            }
-        } else {
-            left_repeat_ticks = 0;
-        }
-
-        if (key_down_now(KEY_RIGHT, packet.keycode)) {
-            right_repeat_ticks++;
-            if (right_repeat_ticks >= 9 && (right_repeat_ticks % 2) == 0 && input_cursor < input_len) {
-                input_cursor++;
-                reset_cursor_blink();
-                redraw_input_line();
-            }
-        } else {
-            right_repeat_ticks = 0;
-        }
+        process_hold_repeats(packet.keycode,
+                             &backspace_repeat_ticks,
+                             &left_repeat_ticks,
+                             &right_repeat_ticks);
 
         memcpy(prev_keys, packet.keycode, 6);
+        memcpy(held_keys, packet.keycode, 6);
+        have_held_report = 1;
         prev_modifiers = packet.modifiers;
         maybe_update_cursor_blink();
     }
