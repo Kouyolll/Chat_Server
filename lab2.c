@@ -315,11 +315,35 @@ static void sanitize_server_line(char *s)
     if (s[0] == '<') {
         char *gt = strchr(s, '>');
         if (gt != NULL) {
-            char *dup = strchr(gt + 1, '<');
-            if (dup != NULL) *dup = '\0';
+            int tag_len = (int)(gt - s + 1);
+            char sender_tag[128];
+            if (tag_len >= (int)sizeof(sender_tag)) tag_len = (int)sizeof(sender_tag) - 1;
+            memcpy(sender_tag, s, (size_t)tag_len);
+            sender_tag[tag_len] = '\0';
+
+            char *dup_same = strstr(gt + 1, sender_tag);
+            if (dup_same != NULL) {
+                *dup_same = '\0';
+            } else {
+                char *dup_any = strchr(gt + 1, '<');
+                if (dup_any != NULL) *dup_any = '\0';
+            }
             trim_right(s);
         }
     }
+}
+
+static int extract_sender_tag(const char *s, char *out, size_t outsz)
+{
+    if (s[0] != '<') return 0;
+    const char *gt = strchr(s, '>');
+    if (gt == NULL) return 0;
+
+    size_t n = (size_t)(gt - s + 1);
+    if (n >= outsz) n = outsz - 1;
+    memcpy(out, s, n);
+    out[n] = '\0';
+    return 1;
 }
 
 static int extract_first_ipv4(const char *s, char *out, size_t outsz)
@@ -358,6 +382,11 @@ static uint32_t color_for_ip_text(const char *ip)
 
 static uint32_t color_for_message(const char *line)
 {
+    char sender_tag[128];
+    if (extract_sender_tag(line, sender_tag, sizeof(sender_tag))) {
+        return color_for_ip_text(sender_tag);
+    }
+
     char ip[64];
     if (extract_first_ipv4(line, ip, sizeof(ip))) {
         return color_for_ip_text(ip);
