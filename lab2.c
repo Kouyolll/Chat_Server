@@ -39,6 +39,7 @@ extern unsigned char *framebuffer;
 #define KEY_ENTER 0x28
 #define KEY_BACKSPACE 0x2a
 #define KEY_CAPS_LOCK 0x39
+#define KEY_C 0x06
 #define KEY_RIGHT 0x4f
 #define KEY_LEFT 0x50
 #define KEY_F12 0x45
@@ -305,6 +306,15 @@ static void delete_before_cursor(void)
             (size_t)(input_len - input_cursor + 1));
     input_cursor--;
     input_len--;
+}
+
+static void clear_input_buffer(void)
+{
+    input_len = 0;
+    input_cursor = 0;
+    input_buf[0] = '\0';
+    reset_cursor_blink();
+    redraw_input_line();
 }
 
 static void process_hold_repeats(const uint8_t keys[6],
@@ -676,11 +686,21 @@ int main()
         int shifted = (packet.modifiers & 0x22) != 0;
         int win_down = (packet.modifiers & (MOD_LGUI | MOD_RGUI)) != 0;
         int win_prev_down = (prev_modifiers & (MOD_LGUI | MOD_RGUI)) != 0;
+        int new_printable_count = 0;
         if (win_down && !win_prev_down) {
             pthread_mutex_lock(&fb_lock);
             clear_chat_and_input_locked();
             pthread_mutex_unlock(&fb_lock);
         }
+
+        for (int i = 0; i < 6; i++) {
+            uint8_t key = packet.keycode[i];
+            if (key == 0) continue;
+            if (key_in_prev(key, prev_keys)) continue;
+            if (hid_to_ascii(key, shifted, caps_lock_on) != 0) new_printable_count++;
+        }
+
+        int suppress_printables = (new_printable_count > 1);
 
         for (int i = 0; i < 6; i++) {
             uint8_t key = packet.keycode[i];
@@ -697,6 +717,9 @@ int main()
                 clear_chat_and_input_locked();
                 pthread_mutex_unlock(&fb_lock);
                 reset_cursor_blink();
+            } else if (key == KEY_C &&
+                       (packet.modifiers & (MOD_LALT | MOD_RALT)) != 0) {
+                clear_input_buffer();
             } else if (key == KEY_ENTER) {
                 if (input_len > 0) {
                     write(sockfd, input_buf, input_len);
@@ -727,6 +750,7 @@ int main()
                 }
             } else {
                 char ch = hid_to_ascii(key, shifted, caps_lock_on);
+                if (suppress_printables) continue;
                 if (ch && input_len < BUFFER_SIZE - 1) {
                     memmove(input_buf + input_cursor + 1,
                             input_buf + input_cursor,
