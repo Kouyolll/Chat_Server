@@ -178,14 +178,14 @@ static void strip_extra_addr_fragments(char *s)
     }
 
     while (s[i] && j < (int)sizeof(out) - 1) {
-        /* Remove any <...> block after prefix */
+        /* Remove any <...> block after prefix 
         if (s[i] == '<') {
             i++;
             while (s[i] && s[i] != '>') i++;
             if (s[i] == '>') i++;
             continue;
         }
-
+       */
         /* Remove dangling fragments like :35418> or 35418> */
         if (s[i] == ':' || (s[i] >= '0' && s[i] <= '9')) {
             int k = i;
