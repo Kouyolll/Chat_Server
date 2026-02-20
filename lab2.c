@@ -506,6 +506,69 @@ static int extract_first_endpoint(const char *s, char *out, size_t outsz)
     return 1;
 }
 
+static int is_endpoint_token(const char *s, int n)
+{
+    if (n < 9) return 0; /* at least 1.1.1.1:1 */
+
+    int i = 0, part = 0;
+    while (part < 4) {
+        int digits = 0;
+        int value = 0;
+        while (i < n && s[i] >= '0' && s[i] <= '9' && digits < 3) {
+            value = value * 10 + (s[i] - '0');
+            i++;
+            digits++;
+        }
+        if (digits == 0 || value > 255) return 0;
+        if (part < 3) {
+            if (i >= n || s[i] != '.') return 0;
+            i++;
+        }
+        part++;
+    }
+
+    if (i >= n || s[i] != ':') return 0;
+    i++;
+    int pd = 0;
+    while (i < n && s[i] >= '0' && s[i] <= '9' && pd < 5) {
+        i++;
+        pd++;
+    }
+    if (pd == 0) return 0;
+    return i == n;
+}
+
+static void sanitize_outgoing_message(char *s)
+{
+    trim_right(s);
+
+    for (;;) {
+        int len = (int)strlen(s);
+        if (len <= 0 || s[len - 1] != '>') break;
+
+        int lt = len - 1;
+        while (lt >= 0 && s[lt] != '<') lt--;
+        if (lt < 0) break;
+
+        int token_len = len - lt - 2; /* between < and > */
+        if (!is_endpoint_token(s + lt + 1, token_len)) break;
+
+        s[lt] = '\0';
+        trim_right(s);
+    }
+
+    if (s[0] == '<') {
+        char *gt = strchr(s, '>');
+        if (gt != NULL) {
+            int token_len = (int)(gt - (s + 1));
+            if (token_len > 0 && is_endpoint_token(s + 1, token_len)) {
+                memmove(s, gt + 1, strlen(gt + 1) + 1);
+                while (*s == ' ') memmove(s, s + 1, strlen(s));
+            }
+        }
+    }
+}
+
 static uint32_t color_for_ip_text(const char *ip)
 {
     unsigned int h = 2166136261u;
@@ -722,8 +785,15 @@ int main()
                 clear_input_buffer();
             } else if (key == KEY_ENTER) {
                 if (input_len > 0) {
-                    write(sockfd, input_buf, input_len);
-                    write(sockfd, "\n", 1);
+                    char tx[BUFFER_SIZE];
+                    memcpy(tx, input_buf, (size_t)input_len);
+                    tx[input_len] = '\0';
+                    sanitize_outgoing_message(tx);
+                    int tx_len = (int)strlen(tx);
+                    if (tx_len > 0) {
+                        write(sockfd, tx, tx_len);
+                        write(sockfd, "\n", 1);
+                    }
                     input_len = 0;
                     input_cursor = 0;
                     input_buf[0] = '\0';
