@@ -209,6 +209,14 @@ static void strip_extra_addr_fragments(char *s)
     strcpy(s, out);
 }
 
+static void drop_anything_after_second_prefix(char *s) {
+    if (s[0] != '<') return;
+    char *gt = strchr(s, '>');
+    if (!gt) return;
+    char *p = strchr(gt + 1, '<');
+    if (p) *p = '\0';
+}
+
 int main()
 {
     int err;
@@ -339,11 +347,11 @@ void *network_thread_f(void *ignored)
                 if (line_len > 0) {
                     printf("RAW LINE=[%s]\n", line);
                     strip_extra_addr_fragments(line);
+                    drop_anything_after_second_prefix(line);
                     printf("AFTER STRIP=[%s]\n", line);
                     if (line[0] != '\0') {
                         
                         pthread_mutex_lock(&fb_lock);
-                        strip_extra_addr_fragments(line);
                         chat_push_wrapped(line);
                         chat_redraw_locked();
                         redraw_input_line_locked();   
