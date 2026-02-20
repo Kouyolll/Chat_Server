@@ -43,11 +43,14 @@ int divider_row;
 int input_row;
 int screen_cols;
 
+
 static char input_buf[BUFFER_SIZE];
 static int input_len = 0;
 static int chat_top = 1;
 static int chat_height = 0;
-static char **chat_lines = NULL; 
+static int chat_used = 0;
+static char **chat_lines = NULL;
+
 static pthread_mutex_t fb_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int key_in_prev(uint8_t key, uint8_t prev[6])
@@ -106,16 +109,47 @@ static void redraw_input_line(void)
 static void chat_push_line(const char *s)
 {
 
-    char *tmp = chat_lines[0];
-    for (int r = 0; r < chat_height - 1; r++) {
-        chat_lines[r] = chat_lines[r + 1];
+    char *dst = NULL;
+
+    if (chat_used < chat_height) {
+        dst = chat_lines[chat_used];
+        chat_used++;
+    } else {
+        
+        char *tmp = chat_lines[0];
+        for (int r = 0; r < chat_height - 1; r++) {
+            chat_lines[r] = chat_lines[r + 1];
+        }
+        chat_lines[chat_height - 1] = tmp;
+        dst = chat_lines[chat_height - 1];
     }
-    chat_lines[chat_height - 1] = tmp;
-    memset(chat_lines[chat_height - 1], ' ', screen_cols);
+
+    memset(dst, ' ', screen_cols);
     for (int i = 0; s[i] && i < screen_cols; i++) {
-        chat_lines[chat_height - 1][i] = s[i];
+        dst[i] = s[i];
     }
-    chat_lines[chat_height - 1][screen_cols] = '\0';
+    dst[screen_cols] = '\0';
+}
+
+static void chat_push_wrapped(const char *msg)
+{
+    int L = (int)strlen(msg);
+    int i = 0;
+
+
+    if (L == 0) return;
+
+    while (i < L) {
+        char chunk[1024];
+        int take = L - i;
+        if (take > screen_cols) take = screen_cols;
+
+        memcpy(chunk, msg + i, take);
+        chunk[take] = '\0';
+
+        chat_push_line(chunk);
+        i += take;
+    }
 }
 
 static void chat_redraw_locked(void)
@@ -266,7 +300,9 @@ int main()
                 }
             } else {
                 char ch = hid_to_ascii(key, shifted);
-                if (ch && input_len < BUFFER_SIZE - 1) {
+                int max_input = screen_cols - 8;             
+
+                if (ch && input_len < BUFFER_SIZE - 1 && input_len < max_input) {
                     input_buf[input_len++] = ch;
                     input_buf[input_len] = '\0';
                     redraw_input_line();
@@ -306,7 +342,7 @@ void *network_thread_f(void *ignored)
                         
                         pthread_mutex_lock(&fb_lock);
                         strip_extra_addr_fragments(line);
-                        chat_push_line(line);
+                        chat_push_wrapped(line);
                         chat_redraw_locked();
                         redraw_input_line_locked();   
                         pthread_mutex_unlock(&fb_lock);
