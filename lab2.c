@@ -805,7 +805,6 @@ int main()
                     int tx_len = (int)strlen(tx);
                     if (tx_len > 0) {
                         write(sockfd, tx, tx_len);
-                        write(sockfd, "\n", 1);
                     }
                     input_len = 0;
                     input_cursor = 0;
