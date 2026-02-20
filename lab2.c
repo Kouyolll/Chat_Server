@@ -193,8 +193,8 @@ int main()
     int screen_rows = fb_vinfo.yres / (FONT_HEIGHT * 2);
     screen_cols = fb_vinfo.xres / (FONT_WIDTH * 2);
 
-    divider_row = screen_rows - 3;
-    input_row = screen_rows - 2;
+    divider_row = screen_rows - 4;
+    input_row = screen_rows - 3;
 
     chat_height = divider_row - chat_top;  
 
