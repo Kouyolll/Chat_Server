@@ -12,6 +12,7 @@
  */
 
 #include "fbputchar.h"
+#include <stdint.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -58,7 +59,7 @@ int fbopen()
  * Draw the given character at the given row/column.
  * fbopen() must be called first.
  */
-void fbputchar(char c, int row, int col)
+static void fbputchar_rgb(char c, int row, int col, uint8_t red, uint8_t green, uint8_t blue)
 {
   int x, y;
   unsigned char pixels, *pixelp = font + FONT_HEIGHT * c;
@@ -72,9 +73,9 @@ void fbputchar(char c, int row, int col)
     mask = 0x80;
     for (x = 0 ; x < FONT_WIDTH ; x++) {
       if (pixels & mask) {	
-	pixel[0] = 255; /* Red */
-        pixel[1] = 255; /* Green */
-        pixel[2] = 255; /* Blue */
+	pixel[0] = blue;
+        pixel[1] = green;
+        pixel[2] = red;
         pixel[3] = 0;
       } else {
 	pixel[0] = 0;
@@ -84,9 +85,9 @@ void fbputchar(char c, int row, int col)
       }
       pixel += 4;
       if (pixels & mask) {
-	pixel[0] = 255; /* Red */
-        pixel[1] = 255; /* Green */
-        pixel[2] = 255; /* Blue */
+	pixel[0] = blue;
+        pixel[1] = green;
+        pixel[2] = red;
         pixel[3] = 0;
       } else {
 	pixel[0] = 0;
@@ -101,6 +102,16 @@ void fbputchar(char c, int row, int col)
   }
 }
 
+void fbputchar(char c, int row, int col)
+{
+  fbputchar_rgb(c, row, col, 255, 255, 255);
+}
+
+void fbputchar_color(char c, int row, int col, uint8_t red, uint8_t green, uint8_t blue)
+{
+  fbputchar_rgb(c, row, col, red, green, blue);
+}
+
 /*
  * Draw the given string at the given row/column.
  * String must fit on a single line: wrap-around is not handled.
@@ -109,6 +120,12 @@ void fbputs(const char *s, int row, int col)
 {
   char c;
   while ((c = *s++) != 0) fbputchar(c, row, col++);
+}
+
+void fbputs_color(const char *s, int row, int col, uint8_t red, uint8_t green, uint8_t blue)
+{
+  char c;
+  while ((c = *s++) != 0) fbputchar_color(c, row, col++, red, green, blue);
 }
 
 /* 8 X 16 console font from /lib/kbd/consolefonts/lat0-16.psfu.gz
