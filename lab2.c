@@ -337,7 +337,7 @@ void *network_thread_f(void *ignored)
             if (ch == '\n') {
                 line[line_len] = '\0';
                 if (line_len > 0) {
-                    strip_extra_addr_fragments(line);
+                    //strip_extra_addr_fragments(line);
                     if (line[0] != '\0') {
                         
                         pthread_mutex_lock(&fb_lock);
