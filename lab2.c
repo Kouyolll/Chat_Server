@@ -455,6 +455,32 @@ static int extract_first_ipv4(const char *s, char *out, size_t outsz)
     return 0;
 }
 
+static int extract_first_endpoint(const char *s, char *out, size_t outsz)
+{
+    char ip[64];
+    if (!extract_first_ipv4(s, ip, sizeof(ip))) return 0;
+
+    const char *p = strstr(s, ip);
+    if (p == NULL) return 0;
+
+    size_t ip_len = strlen(ip);
+    size_t n = ip_len;
+    if (p[ip_len] == ':') {
+        size_t k = ip_len + 1;
+        int digits = 0;
+        while (p[k] >= '0' && p[k] <= '9' && digits < 5) {
+            k++;
+            digits++;
+        }
+        if (digits > 0) n = k;
+    }
+
+    if (n >= outsz) n = outsz - 1;
+    memcpy(out, p, n);
+    out[n] = '\0';
+    return 1;
+}
+
 static uint32_t color_for_ip_text(const char *ip)
 {
     static const uint32_t palette[] = {
@@ -477,11 +503,16 @@ static uint32_t color_for_message(const char *line)
         return color_for_ip_text(sender_tag);
     }
 
+    char endpoint[64];
+    if (extract_first_endpoint(line, endpoint, sizeof(endpoint))) {
+        return color_for_ip_text(endpoint);
+    }
+
     char ip[64];
     if (extract_first_ipv4(line, ip, sizeof(ip))) {
         return color_for_ip_text(ip);
     }
-    return make_rgb(255, 255, 255);
+    return color_for_ip_text(line);
 }
 
 static void clear_chat_and_input_locked(void)
