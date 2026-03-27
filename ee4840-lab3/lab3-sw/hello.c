@@ -46,7 +46,6 @@ int main()
   unsigned short y = 240;
   int dx = 5;
   int dy = 4;
-  int i;
   static const char filename[] = "/dev/vga_ball";
 
   printf("VGA ball Userspace program started\n");
@@ -59,7 +58,7 @@ int main()
   printf("initial state: ");
   print_ball_coord();
 
-  for (i = 0 ; i < 400 ; i++) {
+  while (1) {
     set_ball_coord(x, y);
     print_ball_coord();
 
@@ -70,7 +69,4 @@ int main()
     y += dy;
     usleep(30000);
   }
-  
-  printf("VGA BALL Userspace program terminating\n");
-  return 0;
 }
