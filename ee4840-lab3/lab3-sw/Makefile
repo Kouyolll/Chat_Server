@@ -7,7 +7,7 @@ else
 
 # We are being compiled as a module: use the Kernel build system
 
-	KERNEL_SOURCE := /usr/src/linux-headers-$(shell uname -r)
+	KERNEL_SOURCE := /root/Chat_Server_lab3/ee4840-lab3/usr/src/linux-headers-4.19.0
         PWD := $(shell pwd)
 
 default: module hello
